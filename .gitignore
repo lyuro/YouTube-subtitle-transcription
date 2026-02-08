@@ -29,3 +29,6 @@ Thumbs.db
 *.srt
 *.mp3
 *.wav
+
+# Cookies (sensitive)
+cookies/
