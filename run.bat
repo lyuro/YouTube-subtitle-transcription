@@ -7,5 +7,3 @@ cd /d "%~dp0"
 
 :: 使用 PowerShell 运行主脚本
 powershell -ExecutionPolicy Bypass -File "run.ps1" %*
-
-pause

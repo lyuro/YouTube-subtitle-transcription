@@ -481,8 +481,8 @@ def main():
     parser.add_argument(
         '--output-dir', '-d',
         type=str,
-        default='.',
-        help='输出目录 (默认: 当前目录)'
+        default=None,
+        help='输出目录 (默认: 脚本目录下的 output 文件夹)'
     )
     
     parser.add_argument(
@@ -529,8 +529,11 @@ def main():
     
     print(f"🎬 Video ID: {video_id}")
     
-    # 设置输出目录
-    output_dir = Path(args.output_dir).resolve()
+    # 设置输出目录（默认为脚本目录下的 output 文件夹）
+    if args.output_dir:
+        output_dir = Path(args.output_dir).resolve()
+    else:
+        output_dir = Path(__file__).resolve().parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 创建临时目录用于下载
