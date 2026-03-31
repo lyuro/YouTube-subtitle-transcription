@@ -13,6 +13,7 @@ import tempfile
 import shutil
 import importlib.util
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 # 在 Windows 上自动添加 WinGet 安装的 FFmpeg 路径
 def setup_ffmpeg_path():
@@ -65,20 +66,37 @@ def format_duration(seconds: float) -> str:
 def parse_youtube_url(url: str) -> str | None:
     """
     解析 YouTube URL，提取 video_id
-    支持 youtu.be 短链和 youtube.com 完整链接
+    支持 watch、youtu.be、embed、v、shorts、live 等链接
     """
-    patterns = [
-        r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
-        r'(?:https?://)?(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})',
-        r'(?:https?://)?(?:www\.)?youtube\.com/v/([a-zA-Z0-9_-]{11})',
-        r'(?:https?://)?youtu\.be/([a-zA-Z0-9_-]{11})',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    
+    url = url.strip()
+    if re.fullmatch(r'[a-zA-Z0-9_-]{11}', url):
+        return url
+
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', url):
+        url = f'https://{url}'
+
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().split(':', 1)[0]
+    path_parts = [part for part in parsed.path.split('/') if part]
+
+    def is_valid_video_id(value: str | None) -> bool:
+        return bool(value and re.fullmatch(r'[a-zA-Z0-9_-]{11}', value))
+
+    if host == 'youtu.be' and path_parts:
+        video_id = path_parts[0]
+        return video_id if is_valid_video_id(video_id) else None
+
+    if host.endswith('youtube.com') or host.endswith('youtube-nocookie.com'):
+        query = parse_qs(parsed.query)
+        video_id = query.get('v', [None])[0]
+        if is_valid_video_id(video_id):
+            return video_id
+
+        if len(path_parts) >= 2 and path_parts[0] in {'embed', 'v', 'shorts', 'live'}:
+            video_id = path_parts[1]
+            if is_valid_video_id(video_id):
+                return video_id
+
     return None
 
 

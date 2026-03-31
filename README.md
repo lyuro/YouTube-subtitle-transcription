@@ -79,6 +79,7 @@ python transcribe.py "https://youtu.be/xxxxx" --cookies cookies.txt
 ### 交互模式
 
 直接运行 `.\run.ps1` 进入交互模式，支持批量输入多个 URL。
+支持常见 YouTube 链接格式，包括 `watch?v=...`、`youtu.be/...`、`/shorts/...`、`/live/...`。
 
 ### 命令行参数
 
