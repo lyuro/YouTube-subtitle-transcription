@@ -21,6 +21,30 @@ param(
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
+function Get-ProjectVersion {
+    param(
+        [string]$RepoDir
+    )
+
+    try {
+        $commitCount = git -C $RepoDir rev-list --count HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $commitCount -match '^\d+$') {
+            return "v$commitCount"
+        }
+    } catch {
+    }
+
+    return "v0"
+}
+
+$AppVersion = Get-ProjectVersion -RepoDir $ScriptDir
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  YouTube Video Transcription Tool" -ForegroundColor Cyan
+Write-Host "  Version: $AppVersion (git commits)" -ForegroundColor DarkGray
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
 $VenvPath = Join-Path $ScriptDir ".venv"
 $ActivateScript = Join-Path $VenvPath "Scripts\Activate.ps1"
 
@@ -36,10 +60,6 @@ if (-not (Test-Path $VenvPath)) {
 
 # Interactive mode if no URL provided
 if ([string]::IsNullOrEmpty($Url)) {
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  YouTube Video Transcription Tool" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host ""
     Write-Host "Enter one or more YouTube URLs." -ForegroundColor Gray
     Write-Host "Use | or separate lines. Press Enter on an empty line to start." -ForegroundColor Gray
     $lines = @()

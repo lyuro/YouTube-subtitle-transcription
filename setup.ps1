@@ -4,6 +4,17 @@ $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
+if (Test-Path (Join-Path $ScriptDir ".git")) {
+    try {
+        git config core.hooksPath .githooks | Out-Null
+        Write-Host "[*] Git hooks path set to .githooks" -ForegroundColor Gray
+        Write-Host ""
+    } catch {
+        Write-Host "[!] Could not configure git hooks path automatically" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  YouTube Transcription Tool - Setup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan

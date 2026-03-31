@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+if command -v python >/dev/null 2>&1; then
+  python scripts/update_commit_version.py --next --stage
+elif command -v py >/dev/null 2>&1; then
+  py -3 scripts/update_commit_version.py --next --stage
+else
+  echo "Python not found; cannot update notebook version." >&2
+  exit 1
+fi
