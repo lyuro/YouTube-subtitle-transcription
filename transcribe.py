@@ -490,6 +490,12 @@ def main():
     )
     
     parser.add_argument(
+        '--srt',
+        action='store_true',
+        help='同时生成 SRT 字幕文件（等同于 --output both）'
+    )
+    
+    parser.add_argument(
         '--language', '-l',
         type=str,
         default=None,
@@ -538,6 +544,10 @@ def main():
     )
     
     args = parser.parse_args()
+    
+    # --srt 等同于 --output both
+    if args.srt:
+        args.output = 'both'
     
     # 验证 URL
     video_id = parse_youtube_url(args.url)
