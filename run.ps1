@@ -10,7 +10,8 @@ param(
     [string]$Language = "",
     [string]$OutputDir = ".",
     [ValidateSet("txt", "srt", "both")]
-    [string]$Format = "both",
+    [string]$Format = "txt",
+    [switch]$Srt,
     [switch]$KeepAudio,
     [string]$Cookies = "",
     [string]$CookiesFromBrowser = "",
@@ -88,6 +89,11 @@ if ($UrlList.Count -eq 0) {
     exit 1
 }
 
+# --Srt 开关等同于 -Format both
+if ($Srt) {
+    $Format = "both"
+}
+
 # Build base arguments
 $baseArgs = @()
 
@@ -134,7 +140,7 @@ if (-not [string]::IsNullOrEmpty($RemoteComponents)) {
 # Run transcription queue
 Write-Host ""
 Write-Host "[*] Starting transcription queue..." -ForegroundColor Green
-Write-Host "    Model: $Model | Format: $Format | Count: $($UrlList.Count)" -ForegroundColor Gray
+Write-Host "    Model: $Model | Format: $Format | SRT: $Srt | Count: $($UrlList.Count)" -ForegroundColor Gray
 $hadError = $false
 foreach ($item in $UrlList) {
     Write-Host ""
