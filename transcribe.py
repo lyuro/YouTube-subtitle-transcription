@@ -369,6 +369,28 @@ def transcribe_audio(
     if language:
         transcribe_options['language'] = language
     
+    # 根据语言设置 initial_prompt，引导 Whisper 输出正确的标点符号
+    # CJK 语言在无 prompt 时容易丢失标点
+    initial_prompts = {
+        'zh': '以下是普通话的句子，包含正确的标点符号。',
+        'ja': '以下は日本語のテキストです。句読点を含みます。',
+        'ko': '다음은 한국어 문장입니다. 올바른 구두점을 포함합니다.',
+    }
+
+    prompt_lang = language
+    if not prompt_lang:
+        # 未指定语言时，先用音频前 30 秒检测语言
+        audio_data = whisper.load_audio(str(audio_path))
+        audio_data = whisper.pad_or_trim(audio_data)
+        n_mels = getattr(model.dims, 'n_mels', 80)
+        mel = whisper.log_mel_spectrogram(audio_data, n_mels=n_mels).to(model.device)
+        _, probs = model.detect_language(mel)
+        prompt_lang = max(probs, key=probs.get)
+        print(f"🌐 预检测语言: {prompt_lang}")
+
+    if prompt_lang in initial_prompts:
+        transcribe_options['initial_prompt'] = initial_prompts[prompt_lang]
+    
     # 记录开始时间
     start_time = time.time()
     
