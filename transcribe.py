@@ -100,6 +100,15 @@ def parse_youtube_url(url: str) -> str | None:
     return None
 
 
+def parse_url_list(values: list[str] | str) -> list[str]:
+    """解析批量 URL 输入，支持竖线、回车和空白分隔。"""
+    if isinstance(values, str):
+        raw_text = values
+    else:
+        raw_text = "\n".join(values)
+    return [part.strip() for part in re.split(r"(?:\||\s)+", raw_text) if part.strip()]
+
+
 def sanitize_filename(filename: str) -> str:
     """清理文件名，移除非法字符"""
     illegal_chars = r'[<>:"/\\|?*]'
@@ -343,15 +352,15 @@ def download_audio(
 def transcribe_audio(
     audio_path: Path,
     model_name: str = "large-v3",
-    language: str | None = None
+    language: str | None = None,
+    model=None
 ) -> dict:
     """
     使用 Whisper 转录音频
     """
-    print(f"🔄 正在加载 Whisper 模型 ({model_name})...")
-    
-    # 加载模型
-    model = whisper.load_model(model_name)
+    if model is None:
+        print(f"🔄 正在加载 Whisper 模型 ({model_name})...")
+        model = whisper.load_model(model_name)
     
     # 获取音频时长
     audio_duration = get_audio_duration(audio_path)
@@ -490,9 +499,10 @@ def main():
     )
     
     parser.add_argument(
-        'url',
+        'urls',
         type=str,
-        help='YouTube 视频 URL'
+        nargs='+',
+        help='YouTube 视频 URL；批量时支持空格、换行或 | 分隔'
     )
     
     parser.add_argument(
@@ -571,13 +581,10 @@ def main():
     if args.srt:
         args.output = 'both'
     
-    # 验证 URL
-    video_id = parse_youtube_url(args.url)
-    if not video_id:
-        print("❌ 无效的 YouTube URL")
+    url_list = parse_url_list(args.urls)
+    if not url_list:
+        print("❌ 未提供任何 URL")
         sys.exit(1)
-    
-    print(f"🎬 Video ID: {video_id}")
     
     # 设置输出目录（默认为脚本目录下的 output 文件夹）
     if args.output_dir:
@@ -586,12 +593,12 @@ def main():
         output_dir = Path(__file__).resolve().parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 创建临时目录用于下载
+    # 创建临时目录用于整批下载
     temp_dir = Path(tempfile.mkdtemp())
-    audio_path = None
+    downloaded_items: list[tuple[str, Path, str]] = []
+    failed_items: list[tuple[str, str]] = []
     
     try:
-        # 下载音频
         js_runtimes = parse_js_runtimes(args.js_runtimes)
         if js_runtimes is None:
             js_runtimes = detect_js_runtime()
@@ -604,35 +611,95 @@ def main():
             remote_components
         )
 
-        audio_path, video_title = download_audio(
-            args.url,
-            temp_dir,
-            cookies_path=args.cookies,
-            cookies_from_browser=args.cookies_from_browser,
-            js_runtimes=js_runtimes,
-            remote_components=remote_components
-        )
-        
-        # 转录
-        result = transcribe_audio(
-            audio_path,
-            model_name=args.model,
-            language=args.language
-        )
-        
-        # 保存结果
-        safe_title = sanitize_filename(video_title)
-        output_path = output_dir / safe_title
-        save_transcript(result, output_path, args.output)
-        
-        # 如果需要保留音频，移动到输出目录
-        if args.keep_audio and audio_path:
-            import shutil
-            dest_audio = output_dir / audio_path.name
-            shutil.move(str(audio_path), str(dest_audio))
-            print(f"🎵 音频文件已保存: {dest_audio}")
-            audio_path = None
-        
+        print(f"\n📋 批量任务: 共 {len(url_list)} 个视频")
+        print("=" * 50)
+        print("📥 阶段 1/2: 下载全部音频")
+
+        valid_urls: list[tuple[str, str]] = []
+        for url in url_list:
+            video_id = parse_youtube_url(url)
+            if video_id:
+                valid_urls.append((url, video_id))
+            else:
+                print(f"❌ 无效的 YouTube URL: {url}")
+                failed_items.append((url, "无效的 YouTube URL"))
+
+        if not valid_urls:
+            print("\n❌ 没有可处理的有效 URL")
+            sys.exit(1)
+
+        for idx, (url, video_id) in enumerate(valid_urls, 1):
+            print(f"\n{'=' * 50}")
+            print(f"📌 下载 [{idx}/{len(valid_urls)}]")
+            print(f"🎬 Video ID: {video_id}")
+            print(f"🔗 {url}")
+            print("-" * 50)
+
+            try:
+                audio_path, video_title = download_audio(
+                    url,
+                    temp_dir,
+                    cookies_path=args.cookies,
+                    cookies_from_browser=args.cookies_from_browser,
+                    js_runtimes=js_runtimes,
+                    remote_components=remote_components
+                )
+                downloaded_items.append((url, audio_path, video_title))
+            except Exception as e:
+                print(f"❌ 下载失败: {e}")
+                failed_items.append((url, str(e)))
+
+        if not downloaded_items:
+            print("\n❌ 没有音频下载成功，跳过转录")
+            sys.exit(1)
+
+        print("\n" + "=" * 50)
+        print(f"🎙️ 阶段 2/2: 转录已下载音频（{len(downloaded_items)} 个）")
+        print(f"🔄 正在加载 Whisper 模型 ({args.model})...")
+        model = whisper.load_model(args.model)
+
+        success_count = 0
+        for idx, (url, audio_path, video_title) in enumerate(downloaded_items, 1):
+            print(f"\n{'=' * 50}")
+            print(f"📌 转录 [{idx}/{len(downloaded_items)}]")
+            print(f"🔗 {url}")
+            print("-" * 50)
+
+            try:
+                result = transcribe_audio(
+                    audio_path,
+                    model_name=args.model,
+                    language=args.language,
+                    model=model
+                )
+
+                safe_title = sanitize_filename(video_title)
+                output_path = output_dir / safe_title
+                save_transcript(result, output_path, args.output)
+
+                if args.keep_audio:
+                    dest_audio = output_dir / audio_path.name
+                    shutil.move(str(audio_path), str(dest_audio))
+                    print(f"🎵 音频文件已保存: {dest_audio}")
+
+                success_count += 1
+            except Exception as e:
+                print(f"❌ 转录失败: {e}")
+                failed_items.append((url, str(e)))
+
+        fail_count = len(failed_items)
+        print("\n" + "=" * 50)
+        print("📊 批量处理完成！")
+        print(f"   ✅ 成功: {success_count}")
+        print(f"   ❌ 失败: {fail_count}")
+        print(f"📁 文件位置: {output_dir}")
+
+        if failed_items:
+            print("\n⚠️ 失败的 URL:")
+            for url, error in failed_items:
+                print(f"   - {url} ({error})")
+            sys.exit(1)
+
         print("\n✨ 处理完成！")
         
     except KeyboardInterrupt:

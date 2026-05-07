@@ -62,7 +62,7 @@ if (-not (Test-Path $VenvPath)) {
 # Interactive mode if no URL provided
 if ([string]::IsNullOrEmpty($Url)) {
     Write-Host "Enter one or more YouTube URLs." -ForegroundColor Gray
-    Write-Host "Use | or separate lines. Press Enter on an empty line to start." -ForegroundColor Gray
+    Write-Host "Use |, spaces, or separate lines. Press Enter on an empty line to start." -ForegroundColor Gray
     $lines = @()
     $queuedCount = 0
     while ($true) {
@@ -71,7 +71,7 @@ if ([string]::IsNullOrEmpty($Url)) {
             break
         }
         $lines += $line
-        $lineUrls = $line -split "\|" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        $lineUrls = $line -split "(?:\||\s)+" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
         $queuedCount += $lineUrls.Count
         Write-Host "Queued URLs: $queuedCount" -ForegroundColor Gray
     }
@@ -82,8 +82,8 @@ if ([string]::IsNullOrEmpty($Url)) {
     $Url = ($lines -join "`n")
 }
 
-# Split URLs by newline or pipe
-$UrlList = $Url -split "(?:\r?\n|\|)" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+# Split URLs by pipe or whitespace
+$UrlList = $Url -split "(?:\||\s)+" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
 if ($UrlList.Count -eq 0) {
     Write-Host "[X] No valid URL provided, exiting" -ForegroundColor Red
     exit 1
@@ -141,17 +141,9 @@ if (-not [string]::IsNullOrEmpty($RemoteComponents)) {
 Write-Host ""
 Write-Host "[*] Starting transcription queue..." -ForegroundColor Green
 Write-Host "    Model: $Model | Format: $Format | SRT: $Srt | Count: $($UrlList.Count)" -ForegroundColor Gray
-$hadError = $false
-foreach ($item in $UrlList) {
-    Write-Host ""
-    Write-Host "[*] Processing: $item" -ForegroundColor Green
-    $pyArgs = @($item) + $baseArgs
-    python transcribe.py @pyArgs
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[X] Failed: $item" -ForegroundColor Red
-        $hadError = $true
-    }
-}
-if ($hadError) {
+
+$pyArgs = @($UrlList) + $baseArgs
+python transcribe.py @pyArgs
+if ($LASTEXITCODE -ne 0) {
     exit 1
 }
