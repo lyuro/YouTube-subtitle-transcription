@@ -12,6 +12,7 @@ import sys
 import tempfile
 import shutil
 import importlib.util
+import traceback
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -458,7 +459,7 @@ def download_audio(
             last_error = e
             print(f"⚠️ 客户端 {client_name} 失败: {str(e)[:120]}")
 
-    raise Exception(f"❌ 所有下载方式都失败。最后错误: {last_error}")
+    raise RuntimeError(f"❌ 所有下载方式都失败。最后错误: {last_error}") from last_error
 
 
 # CJK 语言的 initial_prompt，引导 Whisper 输出正确标点
@@ -866,6 +867,7 @@ def main():
                 downloaded_items.append((url, audio_path, video_title))
             except Exception as e:
                 print(f"❌ 下载失败: {e}")
+                traceback.print_exc()
                 failed_items.append((url, str(e)))
 
         if not downloaded_items:
@@ -903,6 +905,7 @@ def main():
                 success_count += 1
             except Exception as e:
                 print(f"❌ 转录失败: {e}")
+                traceback.print_exc()
                 failed_items.append((url, str(e)))
 
         fail_count = len(failed_items)
@@ -925,6 +928,7 @@ def main():
         sys.exit(1)
     except Exception as e:
         print(f"\n❌ 错误: {e}")
+        traceback.print_exc()
         sys.exit(1)
     finally:
         # 清理临时文件
