@@ -6,6 +6,8 @@
 - 🌐 **Google Colab** - 免费云端 GPU 加速，无需本地配置
 - 💻 **本地脚本** - 支持 NVIDIA GPU，完全离线运行
 
+底层使用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)（比原版 openai-whisper 快 2-4 倍，显存更低），内置 VAD 语音检测与反幻听机制。
+
 ---
 
 ## 🌐 Google Colab 使用
@@ -88,7 +90,7 @@ python transcribe.py "https://youtu.be/xxxxx" --cookies cookies.txt
 | `url` | YouTube 视频链接 | (必填) |
 | `--model, -m` | Whisper 模型 | `large-v3` |
 | `--output, -o` | 输出格式 (txt/srt/both) | `txt` |
-| `--language, -l` | 指定语言代码 | 自动检测 |
+| `--language, -l` | 指定语言代码 | `zh` |
 | `--output-dir, -d` | 输出目录 | 当前目录 |
 | `--keep-audio, -k` | 保留音频文件 | 否 |
 | `--cookies` | cookies.txt 文件路径 | 自动查找 `./cookies/` |
@@ -152,11 +154,30 @@ Google Drive/
 ## 🌐 支持的语言
 
 Whisper 支持 99 种语言，常用代码：
-- `zh` - 中文
+- `zh` - 中文（默认）
 - `en` - 英语
 - `ja` - 日语
 - `ko` - 韩语
-- 留空 = 自动检测
+- 明确传空字符串可启用自动检测
+
+---
+
+## 🛡️ 反幻听机制
+
+Whisper 遇到长静音 / 纯 BGM / 低 SNR 音频时容易“幻听”出训练语料中的高频话术（如「请不吝点赞订阅」、「明镜与点点栏目」、「感谢观看」等）。本工具集成三重防护：
+
+1. **VAD 预过滤**：Silero VAD 剧除静音 / 纯音乐段，默认宽松配置不丢信息（适合直播 / 讲解类）
+2. **解码参数**：`condition_on_previous_text=False` + `compression_ratio_threshold=2.2` + `hallucination_silence_threshold=2.0`，阐断重复链
+3. **实时监控 + Fallback**：流式检测连续重复 / 滑动窗口 unique 占比 / 黑名单词命中；触发后自动以激进参数（greedy + 收紧 VAD）重试一次，仍失败则跳过该视频
+
+中断阈值（可在 `transcribe.py` 中调整 `HallucinationMonitor` 入参）：
+
+| 项 | 阈值 | 说明 |
+|---|---|---|
+| 连续相同 segment | 10 | 防止误伤正常重复句 |
+| 滑动窗口时长 | 5 分钟 | 一段足够长的取样 |
+| Unique 占比下限 | 20% | 低于此值判为崩溃 |
+| 黑名单命中上限 | 10 次/窗 | 阈值内触发中断 |
 
 ---
 

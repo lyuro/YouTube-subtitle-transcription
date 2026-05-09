@@ -68,10 +68,17 @@ if (Test-Path $VenvPath) {
     Write-Host "  [OK] Venv created" -ForegroundColor Green
 }
 
-# Activate venv
+# Activate venv (for shell convenience; package operations below use $VenvPython directly)
 $ActivateScript = Join-Path $VenvPath "Scripts\Activate.ps1"
 . $ActivateScript
 Write-Host "  [OK] Venv activated" -ForegroundColor Green
+
+# 显式使用 venv 内的 python，避免 Activate.ps1 失败时误装到系统环境
+$VenvPython = Join-Path $VenvPath "Scripts\python.exe"
+if (-not (Test-Path $VenvPython)) {
+    Write-Host "  [X] Venv python not found at $VenvPython" -ForegroundColor Red
+    exit 1
+}
 
 # Install dependencies
 Write-Host "[5/6] Installing Python packages..." -ForegroundColor Yellow
@@ -79,7 +86,7 @@ Write-Host "[5/6] Installing Python packages..." -ForegroundColor Yellow
 # Check PyTorch
 $torchOK = $false
 try {
-    $result = & python -c "import torch; print(torch.cuda.is_available())" 2>&1
+    $result = & $VenvPython -c "import torch; print(torch.cuda.is_available())" 2>&1
     if ($result -match "True") {
         $torchOK = $true
     }
@@ -89,14 +96,14 @@ if ($torchOK) {
     Write-Host "  [OK] PyTorch CUDA installed" -ForegroundColor Green
 } else {
     Write-Host "  [*] Installing PyTorch CUDA 12.1..." -ForegroundColor Cyan
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    & $VenvPython -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
     Write-Host "  [OK] PyTorch installed" -ForegroundColor Green
 }
 
 # Check yt-dlp
 $ytdlpOK = $false
 try {
-    & python -c "import yt_dlp" 2>$null
+    & $VenvPython -c "import yt_dlp" 2>$null
     if ($LASTEXITCODE -eq 0) { $ytdlpOK = $true }
 } catch {}
 
@@ -104,31 +111,38 @@ if ($ytdlpOK) {
     Write-Host "  [OK] yt-dlp installed" -ForegroundColor Green
 } else {
     Write-Host "  [*] Installing yt-dlp (default extras)..." -ForegroundColor Cyan
-    pip install "yt-dlp[default]"
+    & $VenvPython -m pip install "yt-dlp[default]"
     Write-Host "  [OK] yt-dlp installed" -ForegroundColor Green
 }
 
-# Check whisper
+# Check faster-whisper
 $whisperOK = $false
 try {
-    & python -c "import whisper" 2>$null
+    & $VenvPython -c "import faster_whisper" 2>$null
     if ($LASTEXITCODE -eq 0) { $whisperOK = $true }
 } catch {}
 
 if ($whisperOK) {
-    Write-Host "  [OK] openai-whisper installed" -ForegroundColor Green
+    Write-Host "  [OK] faster-whisper installed" -ForegroundColor Green
 } else {
-    Write-Host "  [*] Installing openai-whisper..." -ForegroundColor Cyan
-    pip install openai-whisper
-    Write-Host "  [OK] openai-whisper installed" -ForegroundColor Green
+    Write-Host "  [*] Installing faster-whisper..." -ForegroundColor Cyan
+    & $VenvPython -m pip install faster-whisper
+    Write-Host "  [OK] faster-whisper installed" -ForegroundColor Green
+}
+
+# 卸载残留的 openai-whisper（如果存在），避免引发歧义
+& $VenvPython -m pip show openai-whisper > $null 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  [*] Removing legacy openai-whisper..." -ForegroundColor Cyan
+    & $VenvPython -m pip uninstall -y openai-whisper | Out-Null
 }
 
 # Verify
 Write-Host "[6/6] Verifying environment..." -ForegroundColor Yellow
 try {
-    $cudaResult = & python -c "import torch; print(torch.cuda.is_available())" 2>&1
+    $cudaResult = & $VenvPython -c "import torch; print(torch.cuda.is_available())" 2>&1
     if ($cudaResult -match "True") {
-        $cudaDevice = & python -c "import torch; print(torch.cuda.get_device_name(0))"
+        $cudaDevice = & $VenvPython -c "import torch; print(torch.cuda.get_device_name(0))"
         Write-Host "  [OK] CUDA available: $cudaDevice" -ForegroundColor Green
     } else {
         Write-Host "  [!] CUDA not available, will use CPU mode" -ForegroundColor Yellow

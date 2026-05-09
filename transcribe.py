@@ -31,7 +31,119 @@ setup_ffmpeg_path()
 import time
 
 import yt_dlp
-import whisper
+from faster_whisper import WhisperModel
+
+
+# ===== 幻听检测与黑名单 =====
+
+# 已知的 Whisper 高频幻听关键词（中文场景）
+# 这些词源于 YouTube 训练语料中反复出现的片头/片尾话术
+HALLUCINATION_KEYWORDS = (
+    "请不吝点赞", "点赞订阅", "订阅转发", "打赏", "明镜", "点点栏目",
+    "感谢观看", "下期再见", "欢迎收看", "订阅频道", "开启小铃铛",
+    "不忘初心", "MBC 新闻", "中央社", "多谢观看",
+)
+
+# segment 被判定为幻听的最小关键词命中数
+HALLUCINATION_KEYWORD_HIT = 1
+
+
+class HallucinationDetected(Exception):
+    """检测到幻听崩溃，中断转录用于 fallback 重试"""
+    pass
+
+
+class HallucinationMonitor:
+    """
+    流式监控 segment 输出，检测 Whisper 幻听崩溃。
+    触发条件（任一满足）：
+      1. 连续 >= consecutive_threshold 个 segment 文本完全一致
+      2. 最近 window_seconds 秒音频内 unique segment 占比 < unique_ratio
+      3. 最近 window_seconds 秒音频内黑名单词命中 >= keyword_hits
+    """
+
+    def __init__(
+        self,
+        consecutive_threshold: int = 10,
+        window_seconds: float = 300.0,
+        unique_ratio: float = 0.2,
+        keyword_hits: int = 10,
+        min_window_segments: int = 20,
+    ) -> None:
+        self.consecutive_threshold = consecutive_threshold
+        self.window_seconds = window_seconds
+        self.unique_ratio = unique_ratio
+        self.keyword_hits = keyword_hits
+        self.min_window_segments = min_window_segments
+        self._last_text: str | None = None
+        self._consecutive_same: int = 0
+        # 滑动窗口：(end_time, text)
+        self._window: list[tuple[float, str]] = []
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return re.sub(r"\s+", "", text or "").strip()
+
+    @staticmethod
+    def _hits_keyword(text: str) -> bool:
+        return any(kw in text for kw in HALLUCINATION_KEYWORDS)
+
+    def feed(self, start: float, end: float, text: str) -> None:
+        norm = self._normalize(text)
+        if not norm:
+            return
+
+        # 1. 连续重复
+        if norm == self._last_text:
+            self._consecutive_same += 1
+        else:
+            self._consecutive_same = 1
+            self._last_text = norm
+
+        if self._consecutive_same >= self.consecutive_threshold:
+            raise HallucinationDetected(
+                f"连续 {self._consecutive_same} 个相同 segment: '{norm[:40]}'"
+            )
+
+        # 2/3. 滑动窗口统计
+        self._window.append((end, norm))
+        cutoff = end - self.window_seconds
+        while self._window and self._window[0][0] < cutoff:
+            self._window.pop(0)
+
+        if len(self._window) >= self.min_window_segments:
+            texts = [t for _, t in self._window]
+            unique_count = len(set(texts))
+            ratio = unique_count / len(texts)
+            if ratio < self.unique_ratio:
+                raise HallucinationDetected(
+                    f"最近 {self.window_seconds:.0f}s 内 unique 占比 {ratio:.0%} < {self.unique_ratio:.0%}"
+                )
+
+            kw_hits = sum(1 for t in texts if self._hits_keyword(t))
+            if kw_hits >= self.keyword_hits:
+                raise HallucinationDetected(
+                    f"最近 {self.window_seconds:.0f}s 内命中黑名单词 {kw_hits} 次"
+                )
+
+
+def filter_hallucinated_segments(segments: list[dict]) -> list[dict]:
+    """后处理：剔除“全是黑名单关键词”的孤立 segment"""
+    cleaned: list[dict] = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        if any(kw in text for kw in HALLUCINATION_KEYWORDS):
+            # 若该段除黑名单词之外几乎没有其他实质内容，则丢弃
+            stripped = text
+            for kw in HALLUCINATION_KEYWORDS:
+                stripped = stripped.replace(kw, "")
+            stripped = re.sub(r"[\s\u3000\.,\u3002\uff0c\u3001\uff01\uff1f!?]", "", stripped)
+            if len(stripped) <= 2:
+                continue
+        cleaned.append(seg)
+    return cleaned
 
 
 def get_audio_duration(audio_path: Path) -> float:
@@ -349,73 +461,180 @@ def download_audio(
     raise Exception(f"❌ 所有下载方式都失败。最后错误: {last_error}")
 
 
+# CJK 语言的 initial_prompt，引导 Whisper 输出正确标点
+INITIAL_PROMPTS = {
+    'zh': '以下是普通话的句子，包含正确的标点符号。',
+    'ja': '以下は日本語のテキストです。句読点を含みます。',
+    'ko': '다음은 한국어 문장입니다. 올바른 구두점을 포함합니다.',
+}
+
+
+def load_whisper_model(model_name: str = "large-v3") -> WhisperModel:
+    """加载 faster-whisper 模型，自动选择 GPU/CPU"""
+    import torch
+    if torch.cuda.is_available():
+        device = "cuda"
+        compute_type = "float16"
+    else:
+        device = "cpu"
+        compute_type = "int8"
+    print(f"🔄 正在加载 faster-whisper 模型 ({model_name}, {device}/{compute_type})...")
+    return WhisperModel(model_name, device=device, compute_type=compute_type)
+
+
+def _build_transcribe_kwargs(language: str | None, aggressive: bool) -> dict:
+    """
+    构建 faster-whisper transcribe() 调用参数。
+    aggressive=True 用于 fallback 重试：收紧 VAD、关 beam search。
+    """
+    # VAD 参数：宽松配置（直播/讲解类不易丢信息）
+    if aggressive:
+        vad_parameters = dict(
+            threshold=0.5,
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=1500,
+            speech_pad_ms=400,
+        )
+    else:
+        vad_parameters = dict(
+            threshold=0.3,
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=2000,
+            speech_pad_ms=600,
+        )
+
+    kwargs: dict = {
+        "language": language or "zh",
+        "vad_filter": True,
+        "vad_parameters": vad_parameters,
+        # 反幻听核心参数
+        "condition_on_previous_text": False,
+        "compression_ratio_threshold": 2.2,
+        "no_speech_threshold": 0.7,
+        "log_prob_threshold": -1.0,
+        "hallucination_silence_threshold": 2.0,
+        "word_timestamps": False,
+    }
+
+    if aggressive:
+        # fallback：贪心解码，温度固定 0
+        kwargs["temperature"] = 0.0
+        kwargs["beam_size"] = 1
+    else:
+        kwargs["beam_size"] = 5
+        kwargs["temperature"] = [0.0, 0.2, 0.4]
+
+    prompt_lang = kwargs["language"]
+    if prompt_lang in INITIAL_PROMPTS:
+        kwargs["initial_prompt"] = INITIAL_PROMPTS[prompt_lang]
+
+    return kwargs
+
+
+def _run_transcribe(
+    model: WhisperModel,
+    audio_path: Path,
+    audio_duration: float,
+    language: str | None,
+    aggressive: bool,
+) -> dict:
+    """执行一次转录，流式收集 segment 并实时监控幻听"""
+    kwargs = _build_transcribe_kwargs(language, aggressive)
+    label = "fallback (激进)" if aggressive else "正常"
+    print(f"🎙️ 正在转录音频... [{label}]")
+
+    monitor = HallucinationMonitor(
+        consecutive_threshold=10,
+        window_seconds=300.0,
+        unique_ratio=0.2,
+        keyword_hits=10,
+    )
+
+    start_time = time.time()
+    segments_iter, info = model.transcribe(str(audio_path), **kwargs)
+
+    detected_lang = info.language
+    if not language:
+        print(f"🌐 检测到语言: {detected_lang}")
+
+    collected: list[dict] = []
+    last_progress_print = 0.0
+
+    for seg in segments_iter:
+        seg_dict = {
+            "start": seg.start,
+            "end": seg.end,
+            "text": seg.text,
+        }
+        collected.append(seg_dict)
+
+        # 实时打印进度（每 30 秒音频时长打印一次）
+        if seg.end - last_progress_print >= 30.0:
+            ts = format_timestamp(seg.start).replace(",", ".")
+            preview = seg.text.strip()[:60]
+            if audio_duration > 0:
+                pct = min(100.0, seg.end / audio_duration * 100)
+                print(f"  [{ts}] ({pct:5.1f}%) {preview}")
+            else:
+                print(f"  [{ts}] {preview}")
+            last_progress_print = seg.end
+
+        # 反幻听监控（可能抛 HallucinationDetected）
+        monitor.feed(seg.start, seg.end, seg.text)
+
+    elapsed_time = time.time() - start_time
+
+    full_text = "".join(s["text"] for s in collected)
+    print(f"\n✅ 转录完成！语言: {detected_lang}")
+    print(f"⏱️  处理耗时: {format_duration(elapsed_time)}")
+    if audio_duration > 0:
+        speed_ratio = audio_duration / elapsed_time
+        print(f"🚀 处理速度: {speed_ratio:.2f}x 实时速度")
+
+    return {
+        "text": full_text,
+        "segments": collected,
+        "language": detected_lang,
+    }
+
+
 def transcribe_audio(
     audio_path: Path,
     model_name: str = "large-v3",
     language: str | None = None,
-    model=None
+    model: WhisperModel | None = None,
 ) -> dict:
     """
-    使用 Whisper 转录音频
+    使用 faster-whisper 转录音频。
+    内置反幻听监控；触发后自动用激进参数重试一次，仍失败则抛异常。
     """
     if model is None:
-        print(f"🔄 正在加载 Whisper 模型 ({model_name})...")
-        model = whisper.load_model(model_name)
-    
-    # 获取音频时长
+        model = load_whisper_model(model_name)
+
     audio_duration = get_audio_duration(audio_path)
     if audio_duration > 0:
         print(f"🎵 音频时长: {format_duration(audio_duration)}")
-    
-    print("🎙️ 正在转录音频...")
-    
-    # 转录配置
-    transcribe_options = {
-        'verbose': True,  # 显示进度
-        'fp16': True,     # 使用 FP16 加速
-    }
-    
-    if language:
-        transcribe_options['language'] = language
-    
-    # 根据语言设置 initial_prompt，引导 Whisper 输出正确的标点符号
-    # CJK 语言在无 prompt 时容易丢失标点
-    initial_prompts = {
-        'zh': '以下是普通话的句子，包含正确的标点符号。',
-        'ja': '以下は日本語のテキストです。句読点を含みます。',
-        'ko': '다음은 한국어 문장입니다. 올바른 구두점을 포함합니다.',
-    }
 
-    prompt_lang = language
-    if not prompt_lang:
-        # 未指定语言时，先用音频前 30 秒检测语言
-        audio_data = whisper.load_audio(str(audio_path))
-        audio_data = whisper.pad_or_trim(audio_data)
-        n_mels = getattr(model.dims, 'n_mels', 80)
-        mel = whisper.log_mel_spectrogram(audio_data, n_mels=n_mels).to(model.device)
-        _, probs = model.detect_language(mel)
-        prompt_lang = max(probs, key=probs.get)
-        print(f"🌐 预检测语言: {prompt_lang}")
+    # 第一次尝试：正常参数
+    try:
+        result = _run_transcribe(model, audio_path, audio_duration, language, aggressive=False)
+    except HallucinationDetected as e:
+        print(f"\n⚠️ 检测到幻听: {e}")
+        print("🔁 切换激进参数重试 (greedy + 收紧 VAD)...")
+        # 第二次尝试：fallback 激进参数
+        try:
+            result = _run_transcribe(model, audio_path, audio_duration, language, aggressive=True)
+        except HallucinationDetected as e2:
+            raise RuntimeError(f"两次尝试均检测到幻听，放弃: {e2}") from e2
 
-    if prompt_lang in initial_prompts:
-        transcribe_options['initial_prompt'] = initial_prompts[prompt_lang]
-    
-    # 记录开始时间
-    start_time = time.time()
-    
-    result = model.transcribe(str(audio_path), **transcribe_options)
-    
-    # 计算处理耗时和速度
-    elapsed_time = time.time() - start_time
-    
-    detected_lang = result.get('language', 'unknown')
-    print(f"\n✅ 转录完成！检测到语言: {detected_lang}")
-    print(f"⏱️  处理耗时: {format_duration(elapsed_time)}")
-    
-    if audio_duration > 0:
-        speed_ratio = audio_duration / elapsed_time
-        print(f"🚀 处理速度: {speed_ratio:.2f}x 实时速度")
-    
+    # 后处理：剔除孤立的全黑名单 segment
+    before = len(result["segments"])
+    result["segments"] = filter_hallucinated_segments(result["segments"])
+    after = len(result["segments"])
+    if before != after:
+        print(f"🧹 后处理过滤幻听 segment: {before - after} 个")
+        result["text"] = "".join(s["text"] for s in result["segments"])
+
     return result
 
 
@@ -531,7 +750,7 @@ def main():
         '--language', '-l',
         type=str,
         default=None,
-        help='指定音频语言 (如: zh, en, ja)，不指定则自动检测'
+        help='指定音频语言 (如: zh, en, ja)，不指定默认 zh'
     )
     
     parser.add_argument(
@@ -655,8 +874,7 @@ def main():
 
         print("\n" + "=" * 50)
         print(f"🎙️ 阶段 2/2: 转录已下载音频（{len(downloaded_items)} 个）")
-        print(f"🔄 正在加载 Whisper 模型 ({args.model})...")
-        model = whisper.load_model(args.model)
+        model = load_whisper_model(args.model)
 
         success_count = 0
         for idx, (url, audio_path, video_title) in enumerate(downloaded_items, 1):
