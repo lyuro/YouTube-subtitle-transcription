@@ -147,6 +147,49 @@ def filter_hallucinated_segments(segments: list[dict]) -> list[dict]:
     return cleaned
 
 
+def build_plain_text_from_segments(segments: list[dict]) -> str:
+    """将转录 segment 转成每段一行的纯文本。"""
+    lines: list[str] = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def print_segment_coverage(segments: list[dict], audio_duration: float) -> None:
+    """打印 segment 覆盖统计，辅助判断是否可能缺失内容。"""
+    print(f"🧩 Segment 数量: {len(segments)}")
+    if not segments:
+        print("⚠️ 未生成任何 segment")
+        return
+
+    last_end = float(segments[-1].get("end") or 0.0)
+    if audio_duration > 0:
+        coverage = min(100.0, last_end / audio_duration * 100)
+        print(
+            f"📈 覆盖进度: {format_duration(last_end)} / "
+            f"{format_duration(audio_duration)} ({coverage:.1f}%)"
+        )
+    else:
+        print(f"📈 最后片段结束: {format_duration(last_end)}")
+
+    long_gaps: list[float] = []
+    previous_end = float(segments[0].get("end") or 0.0)
+    for seg in segments[1:]:
+        start = float(seg.get("start") or 0.0)
+        gap = start - previous_end
+        if gap >= 10.0:
+            long_gaps.append(gap)
+        previous_end = float(seg.get("end") or previous_end)
+
+    if long_gaps:
+        print(
+            f"ℹ️ 检测到 {len(long_gaps)} 个较长无转录间隔 "
+            f"(最长 {format_duration(max(long_gaps))})，通常是静音/BGM/VAD 跳过"
+        )
+
+
 def get_audio_duration(audio_path: Path) -> float:
     """获取音频文件时长（秒）"""
     import subprocess
@@ -569,15 +612,15 @@ def _run_transcribe(
         }
         collected.append(seg_dict)
 
-        # 实时打印进度（每 30 秒音频时长打印一次）
+        # 实时打印抽样进度（每 30 秒音频时长打印一次）
         if seg.end - last_progress_print >= 30.0:
             ts = format_timestamp(seg.start).replace(",", ".")
             preview = seg.text.strip()[:60]
             if audio_duration > 0:
                 pct = min(100.0, seg.end / audio_duration * 100)
-                print(f"  [{ts}] ({pct:5.1f}%) {preview}")
+                print(f"  进度预览 [{ts}] ({pct:5.1f}%) {preview}")
             else:
-                print(f"  [{ts}] {preview}")
+                print(f"  进度预览 [{ts}] {preview}")
             last_progress_print = seg.end
 
         # 反幻听监控（可能抛 HallucinationDetected）
@@ -585,12 +628,13 @@ def _run_transcribe(
 
     elapsed_time = time.time() - start_time
 
-    full_text = "".join(s["text"] for s in collected)
+    full_text = build_plain_text_from_segments(collected)
     print(f"\n✅ 转录完成！语言: {detected_lang}")
     print(f"⏱️  处理耗时: {format_duration(elapsed_time)}")
     if audio_duration > 0:
         speed_ratio = audio_duration / elapsed_time
         print(f"🚀 处理速度: {speed_ratio:.2f}x 实时速度")
+    print_segment_coverage(collected, audio_duration)
 
     return {
         "text": full_text,
@@ -634,7 +678,7 @@ def transcribe_audio(
     after = len(result["segments"])
     if before != after:
         print(f"🧹 后处理过滤幻听 segment: {before - after} 个")
-        result["text"] = "".join(s["text"] for s in result["segments"])
+        result["text"] = build_plain_text_from_segments(result["segments"])
 
     return result
 
@@ -659,8 +703,9 @@ def save_transcript(
     """
     if output_format == "txt":
         output_file = output_path.with_suffix('.txt')
+        text = result.get('text') or build_plain_text_from_segments(result.get('segments', []))
         with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(result['text'].strip())
+            f.write(text.strip())
         print(f"📄 文本文件已保存: {output_file}")
         
     elif output_format == "srt":
@@ -682,8 +727,9 @@ def save_transcript(
     elif output_format == "both":
         # 保存 txt
         txt_file = output_path.with_suffix('.txt')
+        text = result.get('text') or build_plain_text_from_segments(result.get('segments', []))
         with open(txt_file, 'w', encoding='utf-8') as f:
-            f.write(result['text'].strip())
+            f.write(text.strip())
         print(f"📄 文本文件已保存: {txt_file}")
         
         # 保存 srt
