@@ -9,6 +9,9 @@ __pycache__/
 
 # Virtual Environment
 .venv/
+.venv/**
+.venv.broken-*/
+.venv.broken-*/**
 venv/
 ENV/
 
@@ -25,6 +28,8 @@ Thumbs.db
 *.ipynb_checkpoints
 
 # Outputs (local testing)
+output/
+*.log
 *.txt
 *.srt
 *.mp3

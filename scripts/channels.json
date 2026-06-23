@@ -1,0 +1,22 @@
+[
+  {
+    "name": "投资TALK君",
+    "handle": "yttalkjun",
+    "includeStreams": true
+  },
+  {
+    "name": "贝拉聊财金",
+    "handle": "bellafinance",
+    "includeStreams": false
+  },
+  {
+    "name": "NaNa说美股",
+    "handle": "NaNaShuoMeiGu",
+    "includeStreams": false
+  },
+  {
+    "name": "阳光财经",
+    "handle": "SUNNYFINANCE",
+    "includeStreams": false
+  }
+]
