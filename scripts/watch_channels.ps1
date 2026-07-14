@@ -59,6 +59,31 @@ function Write-RunRecord {
     ($Record | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $RunLogPath -Encoding utf8
 }
 
+function Invoke-WithLogRetry {
+    param(
+        [scriptblock]$Operation,
+        [string]$LogPath,
+        [int]$MaxAttempts = 10,
+        [int]$DelayMilliseconds = 500
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return & $Operation
+        } catch {
+            $message = $_.Exception.Message
+            $isLastAttempt = $attempt -eq $MaxAttempts
+            $isFileLock = $message -like "*because it is being used by another process*"
+            if (-not $isFileLock -or $isLastAttempt) {
+                throw
+            }
+
+            Write-Warning "Log file still locked for $LogPath; retrying ($attempt/$MaxAttempts)."
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+}
+
 function Test-CommandVersion {
     param([object]$Command)
     try {
@@ -218,7 +243,7 @@ function Invoke-Transcription {
     )
 
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-    $args = @{
+    $runArgs = @{
         Url = $Item.Url
         Model = $Model
         Language = $Language
@@ -226,14 +251,27 @@ function Invoke-Transcription {
         OutputDir = $OutDir
     }
     if (-not [string]::IsNullOrWhiteSpace($Cookies)) {
-        $args.Cookies = $Cookies
+        $runArgs.Cookies = $Cookies
     }
     if (-not [string]::IsNullOrWhiteSpace($CookiesFromBrowser)) {
-        $args.CookiesFromBrowser = $CookiesFromBrowser
+        $runArgs.CookiesFromBrowser = $CookiesFromBrowser
     }
 
-    "[$(Get-Date -Format o)] $($Item.Url) $($Item.Title)" | Set-Content -LiteralPath $LogPath -Encoding utf8
-    & $RunScript @args 2>&1 | Tee-Object -FilePath $LogPath -Append
+    Invoke-WithLogRetry -LogPath $LogPath -Operation {
+        "[$(Get-Date -Format o)] $($Item.Url) $($Item.Title)" | Set-Content -LiteralPath $LogPath -Encoding utf8
+    }
+    $oldErrorActionPreference = $ErrorActionPreference
+    $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        Invoke-WithLogRetry -LogPath $LogPath -Operation {
+            $null = & $RunScript @runArgs 2>&1 | Tee-Object -FilePath $LogPath -Append
+        }
+    } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $oldNativeCommandPreference
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Transcription failed with exit code $LASTEXITCODE. See $LogPath"
     }
@@ -291,12 +329,17 @@ function Invoke-RcloneUpload {
         throw "rclone was not found on PATH. Install rclone and configure remote '$DriveRemote' first."
     }
 
-    "[$(Get-Date -Format o)] Upload $SourceDir -> $RemotePath" | Add-Content -LiteralPath $LogPath -Encoding utf8
-    & $rclone.Source copy $SourceDir $RemotePath --create-empty-src-dirs 2>&1 | Tee-Object -FilePath $LogPath -Append
+    Invoke-WithLogRetry -LogPath $LogPath -Operation {
+        "[$(Get-Date -Format o)] Upload $SourceDir -> $RemotePath" | Add-Content -LiteralPath $LogPath -Encoding utf8
+    }
+    Invoke-WithLogRetry -LogPath $LogPath -Operation {
+        & $rclone.Source copy $SourceDir $RemotePath --create-empty-src-dirs 2>&1 | Tee-Object -FilePath $LogPath -Append
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "rclone upload failed with exit code $LASTEXITCODE. See $LogPath"
     }
 }
+
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
     throw "Channel config not found: $ConfigPath"
@@ -365,7 +408,7 @@ foreach ($item in $newItems) {
     $datePart = $item.PublishedAt.ToString("yyyy-MM-dd")
     $channelPart = Get-SafePathName -Value $item.Channel
     $videoOutDir = Join-Path $TranscriptRoot (Join-Path $datePart (Join-Path $channelPart $item.Id))
-    $logPath = Join-Path $LogRoot "$($item.PublishedAt.ToString("yyyyMMdd-HHmmss"))-$($item.Id).log"
+    $logPath = Join-Path $LogRoot "$((Get-Date).ToString("yyyyMMdd-HHmmss"))-$($item.Id).log"
     $record = [ordered]@{
         time = (Get-Date).ToString("o")
         id = $item.Id
@@ -427,3 +470,5 @@ if ($hadFailure) {
 }
 
 exit 0
+
+

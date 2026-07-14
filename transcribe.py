@@ -460,9 +460,10 @@ def download_audio(
     output_template = str(output_dir / f"{safe_title}.%(ext)s")
 
     client_configs = [
-        {'player_client': ['ios', 'web']},
         {'player_client': ['android', 'web']},
         {'player_client': ['tv', 'web']},
+        {'player_client': ['web']},
+        {'player_client': ['ios', 'web']},
         {},
     ]
 
@@ -986,3 +987,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
