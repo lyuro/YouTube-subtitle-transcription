@@ -514,6 +514,21 @@ INITIAL_PROMPTS = {
 }
 
 
+def normalize_language(language: str | None) -> str | None:
+    """
+    归一化语言参数：
+      - None（未指定）→ 默认 zh
+      - 'auto' 或空字符串 → None，由 faster-whisper 自动检测
+      - 其他 → 去空格、转小写后作为语言代码使用
+    """
+    if language is None:
+        return "zh"
+    lang = language.strip().lower()
+    if lang in ("", "auto"):
+        return None
+    return lang
+
+
 def load_whisper_model(model_name: str = "large-v3") -> WhisperModel:
     """加载 faster-whisper 模型，自动选择 GPU/CPU"""
     import torch
@@ -530,6 +545,7 @@ def load_whisper_model(model_name: str = "large-v3") -> WhisperModel:
 def _build_transcribe_kwargs(language: str | None, aggressive: bool) -> dict:
     """
     构建 faster-whisper transcribe() 调用参数。
+    language=None 时由 faster-whisper 用音频前 30 秒自动检测语言。
     aggressive=True 用于 fallback 重试：收紧 VAD、关 beam search。
     """
     # VAD 参数：宽松配置（直播/讲解类不易丢信息）
@@ -549,7 +565,7 @@ def _build_transcribe_kwargs(language: str | None, aggressive: bool) -> dict:
         )
 
     kwargs: dict = {
-        "language": language or "zh",
+        "language": language,
         "vad_filter": True,
         "vad_parameters": vad_parameters,
         # 反幻听核心参数
@@ -652,8 +668,11 @@ def transcribe_audio(
 ) -> dict:
     """
     使用 faster-whisper 转录音频。
+    language 传 'auto' 或空则自动检测，不传默认 zh。
     内置反幻听监控；触发后自动用激进参数重试一次，仍失败则抛异常。
     """
+    language = normalize_language(language)
+
     if model is None:
         model = load_whisper_model(model_name)
 
@@ -762,6 +781,7 @@ def main():
   python transcribe.py "https://youtube.com/watch?v=xxxxx" --model medium
   python transcribe.py "https://youtu.be/xxxxx" --output srt
   python transcribe.py "https://youtu.be/xxxxx" --output both --language ja
+  python transcribe.py "https://youtu.be/xxxxx" --language auto
         """
     )
     
@@ -798,7 +818,7 @@ def main():
         '--language', '-l',
         type=str,
         default=None,
-        help='指定音频语言 (如: zh, en, ja)，不指定默认 zh'
+        help='指定音频语言 (如: zh, en, ja)；auto 表示自动检测；不指定默认 zh'
     )
     
     parser.add_argument(

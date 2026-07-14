@@ -80,6 +80,16 @@ if ([string]::IsNullOrEmpty($Url)) {
         exit 1
     }
     $Url = ($lines -join "`n")
+
+    # 整批统一语言；auto 时每个视频转录前独立自动检测
+    if ([string]::IsNullOrEmpty($Language)) {
+        Write-Host ""
+        Write-Host "Language: zh (Chinese) / ja (Japanese) / en (English) / auto (detect per video)" -ForegroundColor Gray
+        $langInput = Read-Host "Language (Enter = zh)"
+        if (-not [string]::IsNullOrWhiteSpace($langInput)) {
+            $Language = $langInput.Trim()
+        }
+    }
 }
 
 # Split URLs by pipe or whitespace
@@ -140,7 +150,8 @@ if (-not [string]::IsNullOrEmpty($RemoteComponents)) {
 # Run transcription queue
 Write-Host ""
 Write-Host "[*] Starting transcription queue..." -ForegroundColor Green
-Write-Host "    Model: $Model | Format: $Format | SRT: $Srt | Count: $($UrlList.Count)" -ForegroundColor Gray
+$LanguageDisplay = if ([string]::IsNullOrEmpty($Language)) { "zh (default)" } else { $Language }
+Write-Host "    Model: $Model | Language: $LanguageDisplay | Format: $Format | SRT: $Srt | Count: $($UrlList.Count)" -ForegroundColor Gray
 
 $pyArgs = @($UrlList) + $baseArgs
 python transcribe.py @pyArgs

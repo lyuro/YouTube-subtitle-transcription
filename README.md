@@ -68,8 +68,9 @@ python transcribe.py "https://youtu.be/xxxxx"
 # 指定模型和输出格式
 python transcribe.py "https://youtu.be/xxxxx" --model medium --output both
 
-# 指定语言
-python transcribe.py "https://youtu.be/xxxxx" --language zh
+# 指定语言（zh/en/ja 等；auto = 自动检测）
+python transcribe.py "https://youtu.be/xxxxx" --language ja
+python transcribe.py "https://youtu.be/xxxxx" --language auto
 
 # 保留下载的音频
 python transcribe.py "https://youtu.be/xxxxx" --keep-audio
@@ -90,7 +91,7 @@ python transcribe.py "https://youtu.be/xxxxx" --cookies cookies.txt
 | `url` | YouTube 视频链接 | (必填) |
 | `--model, -m` | Whisper 模型 | `large-v3` |
 | `--output, -o` | 输出格式 (txt/srt/both) | `txt` |
-| `--language, -l` | 指定语言代码 | `zh` |
+| `--language, -l` | 指定语言代码 (zh/en/ja 等)，`auto` 为自动检测 | `zh` |
 | `--output-dir, -d` | 输出目录 | 当前目录 |
 | `--keep-audio, -k` | 保留音频文件 | 否 |
 | `--cookies` | cookies.txt 文件路径 | 自动查找 `./cookies/` |
